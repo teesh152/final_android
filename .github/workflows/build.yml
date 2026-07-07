@@ -1,0 +1,866 @@
+name: Build MOB2 Final Project APK (YouTube)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.7'
+
+      - name: Scaffold project
+        run: |
+          mkdir -p app/src/main/java/com/example/youtubeapp
+          mkdir -p app/src/main/res/layout app/src/main/res/values app/src/main/res/menu app/src/main/res/drawable
+
+          # ---------------- Gradle files ----------------
+          cat > settings.gradle << 'EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "TubeExplorer"
+          include ':app'
+          EOF
+
+          cat > build.gradle << 'EOF'
+          plugins {
+              id 'com.android.application' version '8.5.2' apply false
+              id 'org.jetbrains.kotlin.android' version '1.9.24' apply false
+          }
+          EOF
+
+          cat > gradle.properties << 'EOF'
+          org.gradle.jvmargs=-Xmx2048m
+          android.useAndroidX=true
+          EOF
+
+          cat > app/build.gradle << 'EOF'
+          plugins {
+              id 'com.android.application'
+              id 'org.jetbrains.kotlin.android'
+          }
+
+          android {
+              namespace 'com.example.youtubeapp'
+              compileSdk 34
+
+              defaultConfig {
+                  applicationId "com.example.youtubeapp"
+                  minSdk 24
+                  targetSdk 34
+                  versionCode 1
+                  versionName "1.0"
+              }
+
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+              kotlinOptions {
+                  jvmTarget = '17'
+              }
+          }
+
+          dependencies {
+              implementation 'androidx.core:core-ktx:1.13.1'
+              implementation 'androidx.appcompat:appcompat:1.7.0'
+              implementation 'com.google.android.material:material:1.12.0'
+              implementation 'androidx.viewpager2:viewpager2:1.1.0'
+              implementation 'androidx.recyclerview:recyclerview:1.3.2'
+              implementation 'androidx.swiperefreshlayout:swiperefreshlayout:1.1.0'
+              implementation 'androidx.fragment:fragment-ktx:1.8.2'
+              implementation 'androidx.lifecycle:lifecycle-viewmodel-ktx:2.8.4'
+              implementation 'com.github.bumptech.glide:glide:4.16.0'
+          }
+          EOF
+
+          # ---------------- Manifest ----------------
+          cat > app/src/main/AndroidManifest.xml << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+              <application
+                  android:allowBackup="true"
+                  android:icon="@drawable/ic_launcher"
+                  android:label="@string/app_name"
+                  android:theme="@style/Theme.TubeExplorer">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+          # ---------------- Kotlin sources ----------------
+          cat > app/src/main/java/com/example/youtubeapp/Video.kt << 'EOF'
+          package com.example.youtubeapp
+
+          import java.io.Serializable
+
+          // Data model for a single video fetched from the YouTube Data API v3
+          data class Video(
+              val videoId: String,
+              val title: String,
+              val channel: String,
+              val publishedAt: String,
+              val description: String,
+              val thumbnail: String
+          ) : Serializable
+          EOF
+
+          cat > app/src/main/java/com/example/youtubeapp/SharedViewModel.kt << 'EOF'
+          package com.example.youtubeapp
+
+          import androidx.lifecycle.LiveData
+          import androidx.lifecycle.MutableLiveData
+          import androidx.lifecycle.ViewModel
+
+          // Shared ViewModel used to pass data between the two fragments
+          class SharedViewModel : ViewModel() {
+
+              private val _videos = MutableLiveData<List<Video>>(emptyList())
+              val videos: LiveData<List<Video>> = _videos
+
+              private val _selected = MutableLiveData<Video?>(null)
+              val selected: LiveData<Video?> = _selected
+
+              fun setVideos(list: List<Video>) { _videos.value = list }
+
+              fun select(video: Video) { _selected.value = video }
+          }
+          EOF
+
+          cat > app/src/main/java/com/example/youtubeapp/NotificationHelper.kt << 'EOF'
+          package com.example.youtubeapp
+
+          import android.app.NotificationChannel
+          import android.app.NotificationManager
+          import android.content.Context
+          import android.os.Build
+          import androidx.core.app.NotificationCompat
+          import androidx.core.app.NotificationManagerCompat
+
+          // Helper object to create the channel and show success / error notifications
+          object NotificationHelper {
+
+              private const val CHANNEL_ID = "videos_channel"
+
+              fun createChannel(ctx: Context) {
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                      val channel = NotificationChannel(
+                          CHANNEL_ID, "Tube Explorer", NotificationManager.IMPORTANCE_DEFAULT
+                      )
+                      val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                      nm.createNotificationChannel(channel)
+                  }
+              }
+
+              fun show(ctx: Context, title: String, message: String, id: Int) {
+                  try {
+                      val notification = NotificationCompat.Builder(ctx, CHANNEL_ID)
+                          .setSmallIcon(android.R.drawable.ic_dialog_info)
+                          .setContentTitle(title)
+                          .setContentText(message)
+                          .setAutoCancel(true)
+                          .build()
+                      NotificationManagerCompat.from(ctx).notify(id, notification)
+                  } catch (e: SecurityException) {
+                      // Notification permission not granted - ignore safely
+                  }
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/com/example/youtubeapp/FetchVideosTask.kt << 'EOF'
+          package com.example.youtubeapp
+
+          import android.os.AsyncTask
+          import org.json.JSONObject
+          import java.net.HttpURLConnection
+          import java.net.URL
+          import java.net.URLEncoder
+
+          // AsyncTask that fetches videos from the YouTube Data API v3 in the background
+          @Suppress("DEPRECATION")
+          class FetchVideosTask(private val onResult: (List<Video>?) -> Unit) :
+              AsyncTask<String, Void, List<Video>?>() {
+
+              companion object {
+                  private const val API_KEY = "AIzaSyAEk7F_bbhTFUWxwJXDn5fzxviwCJYk7EY"
+              }
+
+              override fun doInBackground(vararg params: String): List<Video>? {
+                  return try {
+                      val q = URLEncoder.encode(params[0], "UTF-8")
+                      val url = URL(
+                          "https://www.googleapis.com/youtube/v3/search" +
+                              "?part=snippet&type=video&maxResults=40" +
+                              "&q=" + q + "&key=" + API_KEY
+                      )
+                      val conn = url.openConnection() as HttpURLConnection
+                      conn.connectTimeout = 15000
+                      conn.readTimeout = 15000
+                      val text = conn.inputStream.bufferedReader().use { it.readText() }
+                      conn.disconnect()
+                      parse(text)
+                  } catch (e: Exception) {
+                      null
+                  }
+              }
+
+              override fun onPostExecute(result: List<Video>?) {
+                  onResult(result)
+              }
+
+              private fun parse(json: String): List<Video> {
+                  val list = ArrayList<Video>()
+                  val root = JSONObject(json)
+                  val items = root.optJSONArray("items") ?: return list
+                  for (i in 0 until items.length()) {
+                      val item = items.getJSONObject(i)
+                      val videoId = item.optJSONObject("id")?.optString("videoId") ?: ""
+                      if (videoId.isEmpty()) continue
+                      val snippet = item.optJSONObject("snippet") ?: continue
+                      val thumbs = snippet.optJSONObject("thumbnails")
+                      val thumb = thumbs?.optJSONObject("high")?.optString("url")
+                          ?: thumbs?.optJSONObject("medium")?.optString("url")
+                          ?: thumbs?.optJSONObject("default")?.optString("url")
+                          ?: ""
+                      val published = snippet.optString("publishedAt", "N/A")
+                      list.add(
+                          Video(
+                              videoId = videoId,
+                              title = snippet.optString("title", "Untitled"),
+                              channel = snippet.optString("channelTitle", "Unknown channel"),
+                              publishedAt = if (published.length >= 10) published.substring(0, 10) else published,
+                              description = snippet.optString("description", "No description available."),
+                              thumbnail = thumb
+                          )
+                      )
+                  }
+                  return list
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/com/example/youtubeapp/VideoAdapter.kt << 'EOF'
+          package com.example.youtubeapp
+
+          import android.view.LayoutInflater
+          import android.view.View
+          import android.view.ViewGroup
+          import android.widget.ImageView
+          import android.widget.TextView
+          import androidx.recyclerview.widget.RecyclerView
+          import com.bumptech.glide.Glide
+          import java.util.Locale
+
+          // RecyclerView adapter with built-in search filtering
+          class VideoAdapter(private val onClick: (Video) -> Unit) :
+              RecyclerView.Adapter<VideoAdapter.VH>() {
+
+              private var full: List<Video> = emptyList()
+              private var shown: List<Video> = emptyList()
+
+              fun setVideos(list: List<Video>) {
+                  full = list
+                  shown = list
+                  notifyDataSetChanged()
+              }
+
+              fun filter(query: String) {
+                  val q = query.lowercase(Locale.ROOT)
+                  shown = if (q.isBlank()) full else full.filter {
+                      it.title.lowercase(Locale.ROOT).contains(q) ||
+                          it.channel.lowercase(Locale.ROOT).contains(q)
+                  }
+                  notifyDataSetChanged()
+              }
+
+              class VH(v: View) : RecyclerView.ViewHolder(v) {
+                  val thumb: ImageView = v.findViewById(R.id.imgThumb)
+                  val title: TextView = v.findViewById(R.id.txtTitle)
+                  val channel: TextView = v.findViewById(R.id.txtChannel)
+                  val date: TextView = v.findViewById(R.id.txtDate)
+              }
+
+              override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VH {
+                  val v = LayoutInflater.from(parent.context)
+                      .inflate(R.layout.item_video, parent, false)
+                  return VH(v)
+              }
+
+              override fun getItemCount() = shown.size
+
+              override fun onBindViewHolder(holder: VH, position: Int) {
+                  val vid = shown[position]
+                  holder.title.text = vid.title
+                  holder.channel.text = vid.channel
+                  holder.date.text = vid.publishedAt
+                  if (vid.thumbnail.isNotEmpty()) {
+                      Glide.with(holder.itemView)
+                          .load(vid.thumbnail)
+                          .placeholder(android.R.drawable.ic_menu_gallery)
+                          .into(holder.thumb)
+                  } else {
+                      holder.thumb.setImageResource(android.R.drawable.ic_menu_gallery)
+                  }
+                  holder.itemView.setOnClickListener { onClick(vid) }
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/com/example/youtubeapp/ViewPagerAdapter.kt << 'EOF'
+          package com.example.youtubeapp
+
+          import androidx.fragment.app.Fragment
+          import androidx.fragment.app.FragmentActivity
+          import androidx.viewpager2.adapter.FragmentStateAdapter
+
+          // Adapter that supplies the two fragments to ViewPager2
+          class ViewPagerAdapter(activity: FragmentActivity) : FragmentStateAdapter(activity) {
+              override fun getItemCount() = 2
+              override fun createFragment(position: Int): Fragment =
+                  if (position == 0) VideosListFragment() else DetailsFragment()
+          }
+          EOF
+
+          cat > app/src/main/java/com/example/youtubeapp/VideosListFragment.kt << 'EOF'
+          package com.example.youtubeapp
+
+          import android.os.Bundle
+          import android.view.LayoutInflater
+          import android.view.Menu
+          import android.view.MenuInflater
+          import android.view.MenuItem
+          import android.view.View
+          import android.view.ViewGroup
+          import android.widget.ProgressBar
+          import androidx.appcompat.widget.SearchView
+          import androidx.fragment.app.Fragment
+          import androidx.fragment.app.activityViewModels
+          import androidx.recyclerview.widget.LinearLayoutManager
+          import androidx.recyclerview.widget.RecyclerView
+          import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
+
+          // Tab 1: list of videos from the API in a RecyclerView, with Options Menu,
+          // search, pull-to-refresh and a loading indicator
+          class VideosListFragment : Fragment() {
+
+              private val vm: SharedViewModel by activityViewModels()
+              private lateinit var adapter: VideoAdapter
+              private lateinit var progress: ProgressBar
+              private lateinit var swipe: SwipeRefreshLayout
+
+              @Suppress("DEPRECATION")
+              override fun onCreateView(
+                  inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?
+              ): View {
+                  setHasOptionsMenu(true)
+                  return inflater.inflate(R.layout.fragment_list, container, false)
+              }
+
+              override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+                  progress = view.findViewById(R.id.progressBar)
+                  swipe = view.findViewById(R.id.swipeRefresh)
+                  val recycler = view.findViewById<RecyclerView>(R.id.recyclerVideos)
+                  recycler.layoutManager = LinearLayoutManager(requireContext())
+
+                  adapter = VideoAdapter { video ->
+                      // Pass the selected video to the Details fragment via the shared ViewModel
+                      vm.select(video)
+                      (requireActivity() as MainActivity).goToDetails()
+                  }
+                  recycler.adapter = adapter
+
+                  vm.videos.observe(viewLifecycleOwner) { adapter.setVideos(it) }
+                  swipe.setOnRefreshListener { fetchVideos() }
+
+                  if (vm.videos.value.isNullOrEmpty()) fetchVideos()
+              }
+
+              @Suppress("DEPRECATION")
+              private fun fetchVideos(query: String = "android development tutorials") {
+                  progress.visibility = View.VISIBLE
+                  FetchVideosTask { result ->
+                      if (!isAdded) return@FetchVideosTask
+                      progress.visibility = View.GONE
+                      swipe.isRefreshing = false
+                      if (result != null && result.isNotEmpty()) {
+                          vm.setVideos(result)
+                          NotificationHelper.show(
+                              requireContext(), "Tube Explorer", "Videos loaded successfully", 1
+                          )
+                      } else {
+                          NotificationHelper.show(
+                              requireContext(), "Tube Explorer", "Error loading videos from API", 2
+                          )
+                      }
+                  }.execute(query)
+              }
+
+              @Deprecated("Deprecated in Java")
+              override fun onCreateOptionsMenu(menu: Menu, inflater: MenuInflater) {
+                  inflater.inflate(R.menu.menu_main, menu)
+                  val searchView = menu.findItem(R.id.action_search).actionView as SearchView
+                  searchView.queryHint = "Search videos..."
+                  searchView.setOnQueryTextListener(object : SearchView.OnQueryTextListener {
+                      override fun onQueryTextSubmit(query: String?): Boolean = false
+                      override fun onQueryTextChange(newText: String?): Boolean {
+                          adapter.filter(newText ?: "")
+                          return true
+                      }
+                  })
+                  super.onCreateOptionsMenu(menu, inflater)
+              }
+
+              @Deprecated("Deprecated in Java")
+              override fun onOptionsItemSelected(item: MenuItem): Boolean {
+                  return when (item.itemId) {
+                      R.id.action_refresh -> {
+                          fetchVideos()
+                          true
+                      }
+                      R.id.action_about -> {
+                          NotificationHelper.show(
+                              requireContext(), "Tube Explorer",
+                              "MOB2 Final Project - YouTube Data API v3", 3
+                          )
+                          true
+                      }
+                      else -> super.onOptionsItemSelected(item)
+                  }
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/com/example/youtubeapp/DetailsFragment.kt << 'EOF'
+          package com.example.youtubeapp
+
+          import android.content.Intent
+          import android.net.Uri
+          import android.os.Bundle
+          import android.view.LayoutInflater
+          import android.view.View
+          import android.view.ViewGroup
+          import android.widget.Button
+          import android.widget.ImageView
+          import android.widget.TextView
+          import androidx.fragment.app.Fragment
+          import androidx.fragment.app.activityViewModels
+          import com.bumptech.glide.Glide
+
+          // Tab 2: details of the selected video (defaults to the first video if none selected)
+          class DetailsFragment : Fragment() {
+
+              private val vm: SharedViewModel by activityViewModels()
+
+              override fun onCreateView(
+                  inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?
+              ): View = inflater.inflate(R.layout.fragment_details, container, false)
+
+              override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+                  vm.selected.observe(viewLifecycleOwner) { sel ->
+                      render(view, sel ?: vm.videos.value?.firstOrNull())
+                  }
+                  vm.videos.observe(viewLifecycleOwner) { list ->
+                      if (vm.selected.value == null) render(view, list.firstOrNull())
+                  }
+              }
+
+              private fun render(view: View, video: Video?) {
+                  val thumb = view.findViewById<ImageView>(R.id.dThumb)
+                  val title = view.findViewById<TextView>(R.id.dTitle)
+                  val channel = view.findViewById<TextView>(R.id.dChannel)
+                  val date = view.findViewById<TextView>(R.id.dDate)
+                  val desc = view.findViewById<TextView>(R.id.dDescription)
+                  val btn = view.findViewById<Button>(R.id.btnWatch)
+
+                  if (video == null) {
+                      title.text = "No videos loaded yet"
+                      return
+                  }
+
+                  title.text = video.title
+                  channel.text = "Channel: " + video.channel
+                  date.text = "Published: " + video.publishedAt
+                  desc.text = video.description
+
+                  if (video.thumbnail.isNotEmpty()) {
+                      Glide.with(this).load(video.thumbnail).into(thumb)
+                  }
+
+                  btn.setOnClickListener {
+                      val watchUrl = "https://www.youtube.com/watch?v=" + video.videoId
+                      startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(watchUrl)))
+                  }
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/com/example/youtubeapp/MainActivity.kt << 'EOF'
+          package com.example.youtubeapp
+
+          import android.Manifest
+          import android.os.Build
+          import android.os.Bundle
+          import androidx.appcompat.app.AppCompatActivity
+          import androidx.core.app.ActivityCompat
+          import androidx.viewpager2.widget.ViewPager2
+          import com.google.android.material.tabs.TabLayout
+          import com.google.android.material.tabs.TabLayoutMediator
+
+          // Hosts the TabLayout + ViewPager2 with the two fragments
+          class MainActivity : AppCompatActivity() {
+
+              private lateinit var viewPager: ViewPager2
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  setContentView(R.layout.activity_main)
+
+                  NotificationHelper.createChannel(this)
+                  if (Build.VERSION.SDK_INT >= 33) {
+                      ActivityCompat.requestPermissions(
+                          this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 100
+                      )
+                  }
+
+                  val tabLayout = findViewById<TabLayout>(R.id.tabLayout)
+                  viewPager = findViewById(R.id.viewPager)
+                  viewPager.adapter = ViewPagerAdapter(this)
+
+                  TabLayoutMediator(tabLayout, viewPager) { tab, position ->
+                      tab.text = if (position == 0) "Videos" else "Details"
+                  }.attach()
+              }
+
+              fun goToDetails() {
+                  viewPager.currentItem = 1
+              }
+          }
+          EOF
+
+          # ---------------- Layouts ----------------
+          cat > app/src/main/res/layout/activity_main.xml << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+              xmlns:app="http://schemas.android.com/apk/res-auto"
+              android:orientation="vertical"
+              android:layout_width="match_parent"
+              android:layout_height="match_parent">
+
+              <com.google.android.material.tabs.TabLayout
+                  android:id="@+id/tabLayout"
+                  android:layout_width="match_parent"
+                  android:layout_height="wrap_content"
+                  android:background="@color/red_700"
+                  app:tabTextColor="#CCFFFFFF"
+                  app:tabSelectedTextColor="#FFFFFF"
+                  app:tabIndicatorColor="#FFFFFF" />
+
+              <androidx.viewpager2.widget.ViewPager2
+                  android:id="@+id/viewPager"
+                  android:layout_width="match_parent"
+                  android:layout_height="0dp"
+                  android:layout_weight="1" />
+          </LinearLayout>
+          EOF
+
+          cat > app/src/main/res/layout/fragment_list.xml << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+              android:layout_width="match_parent"
+              android:layout_height="match_parent">
+
+              <androidx.swiperefreshlayout.widget.SwipeRefreshLayout
+                  android:id="@+id/swipeRefresh"
+                  android:layout_width="match_parent"
+                  android:layout_height="match_parent">
+
+                  <androidx.recyclerview.widget.RecyclerView
+                      android:id="@+id/recyclerVideos"
+                      android:layout_width="match_parent"
+                      android:layout_height="match_parent"
+                      android:padding="6dp"
+                      android:clipToPadding="false" />
+              </androidx.swiperefreshlayout.widget.SwipeRefreshLayout>
+
+              <ProgressBar
+                  android:id="@+id/progressBar"
+                  android:layout_width="wrap_content"
+                  android:layout_height="wrap_content"
+                  android:layout_gravity="center"
+                  android:visibility="gone" />
+          </FrameLayout>
+          EOF
+
+          cat > app/src/main/res/layout/item_video.xml << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <com.google.android.material.card.MaterialCardView
+              xmlns:android="http://schemas.android.com/apk/res/android"
+              xmlns:app="http://schemas.android.com/apk/res-auto"
+              android:layout_width="match_parent"
+              android:layout_height="wrap_content"
+              android:layout_margin="6dp"
+              app:cardCornerRadius="12dp"
+              app:cardElevation="4dp">
+
+              <LinearLayout
+                  android:orientation="vertical"
+                  android:layout_width="match_parent"
+                  android:layout_height="wrap_content">
+
+                  <ImageView
+                      android:id="@+id/imgThumb"
+                      android:layout_width="match_parent"
+                      android:layout_height="180dp"
+                      android:scaleType="centerCrop"
+                      android:contentDescription="@string/thumb_desc" />
+
+                  <LinearLayout
+                      android:orientation="vertical"
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:padding="12dp">
+
+                      <TextView
+                          android:id="@+id/txtTitle"
+                          android:layout_width="match_parent"
+                          android:layout_height="wrap_content"
+                          android:textStyle="bold"
+                          android:textSize="16sp"
+                          android:maxLines="2"
+                          android:ellipsize="end" />
+
+                      <TextView
+                          android:id="@+id/txtChannel"
+                          android:layout_width="match_parent"
+                          android:layout_height="wrap_content"
+                          android:textSize="14sp"
+                          android:maxLines="1"
+                          android:ellipsize="end" />
+
+                      <TextView
+                          android:id="@+id/txtDate"
+                          android:layout_width="match_parent"
+                          android:layout_height="wrap_content"
+                          android:textSize="12sp" />
+                  </LinearLayout>
+              </LinearLayout>
+          </com.google.android.material.card.MaterialCardView>
+          EOF
+
+          cat > app/src/main/res/layout/fragment_details.xml << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+              xmlns:app="http://schemas.android.com/apk/res-auto"
+              android:layout_width="match_parent"
+              android:layout_height="match_parent">
+
+              <LinearLayout
+                  android:orientation="vertical"
+                  android:layout_width="match_parent"
+                  android:layout_height="wrap_content"
+                  android:padding="16dp"
+                  android:gravity="center_horizontal">
+
+                  <com.google.android.material.card.MaterialCardView
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      app:cardCornerRadius="16dp"
+                      app:cardElevation="6dp">
+
+                      <ImageView
+                          android:id="@+id/dThumb"
+                          android:layout_width="match_parent"
+                          android:layout_height="200dp"
+                          android:scaleType="centerCrop"
+                          android:contentDescription="@string/thumb_desc" />
+                  </com.google.android.material.card.MaterialCardView>
+
+                  <TextView
+                      android:id="@+id/dTitle"
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:layout_marginTop="16dp"
+                      android:textStyle="bold"
+                      android:textSize="20sp" />
+
+                  <TextView
+                      android:id="@+id/dChannel"
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:layout_marginTop="8dp"
+                      android:textSize="15sp" />
+
+                  <TextView
+                      android:id="@+id/dDate"
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:textSize="15sp" />
+
+                  <TextView
+                      android:id="@+id/dDescription"
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:layout_marginTop="12dp"
+                      android:textSize="14sp"
+                      android:lineSpacingExtra="4dp" />
+
+                  <Button
+                      android:id="@+id/btnWatch"
+                      android:layout_width="wrap_content"
+                      android:layout_height="wrap_content"
+                      android:layout_marginTop="16dp"
+                      android:paddingStart="32dp"
+                      android:paddingEnd="32dp"
+                      android:text="@string/watch_youtube"
+                      android:textColor="#FFFFFF"
+                      android:background="@drawable/custom_button" />
+              </LinearLayout>
+          </ScrollView>
+          EOF
+
+          # ---------------- Menu ----------------
+          cat > app/src/main/res/menu/menu_main.xml << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <menu xmlns:android="http://schemas.android.com/apk/res/android"
+              xmlns:app="http://schemas.android.com/apk/res-auto">
+
+              <item
+                  android:id="@+id/action_search"
+                  android:title="@string/search"
+                  android:icon="@android:drawable/ic_menu_search"
+                  app:showAsAction="ifRoom|collapseActionView"
+                  app:actionViewClass="androidx.appcompat.widget.SearchView" />
+
+              <item
+                  android:id="@+id/action_refresh"
+                  android:title="@string/refresh"
+                  app:showAsAction="never" />
+
+              <item
+                  android:id="@+id/action_about"
+                  android:title="@string/about"
+                  app:showAsAction="never" />
+          </menu>
+          EOF
+
+          # ---------------- Drawables ----------------
+          cat > app/src/main/res/drawable/custom_button.xml << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <shape xmlns:android="http://schemas.android.com/apk/res/android">
+              <gradient
+                  android:startColor="#FF0000"
+                  android:endColor="#C4302B"
+                  android:angle="45" />
+              <corners android:radius="24dp" />
+              <padding android:top="12dp" android:bottom="12dp" />
+          </shape>
+          EOF
+
+          cat > app/src/main/res/drawable/ic_launcher.xml << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="108dp"
+              android:height="108dp"
+              android:viewportWidth="108"
+              android:viewportHeight="108">
+              <path android:fillColor="#FF0000" android:pathData="M0,0h108v108h-108z" />
+              <path android:fillColor="#FFFFFF" android:pathData="M44,36l28,18l-28,18z" />
+          </vector>
+          EOF
+
+          # ---------------- Values ----------------
+          cat > app/src/main/res/values/strings.xml << 'EOF'
+          <resources>
+              <string name="app_name">Tube Explorer</string>
+              <string name="search">Search</string>
+              <string name="refresh">Refresh</string>
+              <string name="about">About</string>
+              <string name="watch_youtube">Watch on YouTube</string>
+              <string name="thumb_desc">Video thumbnail</string>
+          </resources>
+          EOF
+
+          cat > app/src/main/res/values/colors.xml << 'EOF'
+          <resources>
+              <color name="red_500">#FFFF0000</color>
+              <color name="red_700">#FFC4302B</color>
+              <color name="grey_dark">#FF282828</color>
+              <color name="white">#FFFFFFFF</color>
+          </resources>
+          EOF
+
+          cat > app/src/main/res/values/themes.xml << 'EOF'
+          <resources>
+              <style name="Theme.TubeExplorer" parent="Theme.MaterialComponents.DayNight.DarkActionBar">
+                  <item name="colorPrimary">@color/red_500</item>
+                  <item name="colorPrimaryVariant">@color/red_700</item>
+                  <item name="colorOnPrimary">@color/white</item>
+                  <item name="colorSecondary">@color/grey_dark</item>
+              </style>
+          </resources>
+          EOF
+
+      - name: Build APK
+        run: gradle assembleDebug --no-daemon
+
+      - name: Copy APK to repo root
+        run: cp app/build/outputs/apk/debug/app-debug.apk TubeExplorer.apk
+
+      - name: Commit source and APK
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "MOB2 Final Project (YouTube API): source + APK [skip ci]" || echo "Nothing to commit"
+          git push
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TubeExplorer-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
