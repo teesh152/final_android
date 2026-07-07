@@ -1,0 +1,8 @@
+<resources>
+    <string name="app_name">Tube Explorer</string>
+    <string name="search">Search</string>
+    <string name="refresh">Refresh</string>
+    <string name="about">About</string>
+    <string name="watch_youtube">Watch on YouTube</string>
+    <string name="thumb_desc">Video thumbnail</string>
+</resources>

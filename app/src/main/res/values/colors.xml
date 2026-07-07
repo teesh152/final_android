@@ -1,0 +1,6 @@
+<resources>
+    <color name="red_500">#FFFF0000</color>
+    <color name="red_700">#FFC4302B</color>
+    <color name="grey_dark">#FF282828</color>
+    <color name="white">#FFFFFFFF</color>
+</resources>

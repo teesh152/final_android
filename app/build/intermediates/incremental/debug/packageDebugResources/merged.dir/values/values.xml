@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="grey_dark">#FF282828</color>
+    <color name="red_500">#FFFF0000</color>
+    <color name="red_700">#FFC4302B</color>
+    <color name="white">#FFFFFFFF</color>
+    <string name="about">About</string>
+    <string name="app_name">Tube Explorer</string>
+    <string name="refresh">Refresh</string>
+    <string name="search">Search</string>
+    <string name="thumb_desc">Video thumbnail</string>
+    <string name="watch_youtube">Watch on YouTube</string>
+    <style name="Theme.TubeExplorer" parent="Theme.MaterialComponents.DayNight.DarkActionBar">
+        <item name="colorPrimary">@color/red_500</item>
+        <item name="colorPrimaryVariant">@color/red_700</item>
+        <item name="colorOnPrimary">@color/white</item>
+        <item name="colorSecondary">@color/grey_dark</item>
+    </style>
+</resources>
